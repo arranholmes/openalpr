@@ -40,6 +40,7 @@ std::string getJson(Alpr* alpr, std::vector<AlprResult> results);
 
 /** Function Headers */
 bool detectandshow(Alpr* alpr, cv::Mat frame, std::string region, bool writeJson);
+bool cropframe(cv::Mat* frame,int dleft,int dright,int dtop,int dbottom);
 
 bool measureProcessingTime = false;
 
@@ -57,17 +58,25 @@ int main( int argc, const char** argv )
   std::string templateRegion;
   std::string country;
   int topn;
+  int cBottom = 0;
+  int cTop = 0;
+  int cLeft = 0;
+  int cRight = 0;
 
   TCLAP::CmdLine cmd("OpenAlpr Command Line Utility", ' ', Alpr::getVersion());
 
   TCLAP::UnlabeledValueArg<std::string>  fileArg( "image_file", "Image containing license plates", false, "", "image_file_path"  );
 
-  
   TCLAP::ValueArg<std::string> countryCodeArg("c","country","Country code to identify (either us for USA or eu for Europe).  Default=us",false, "us" ,"country_code");
   TCLAP::ValueArg<int> seekToMsArg("","seek","Seek to the specied millisecond in a video file. Default=0",false, 0 ,"integer_ms");
   TCLAP::ValueArg<std::string> configFileArg("","config","Path to the openalpr.conf file",false, "" ,"config_file");
   TCLAP::ValueArg<std::string> templateRegionArg("t","template_region","Attempt to match the plate number against a region template (e.g., md for Maryland, ca for California)",false, "" ,"region code");
   TCLAP::ValueArg<int> topNArg("n","topn","Max number of possible plate numbers to return.  Default=10",false, 10 ,"topN");
+
+  TCLAP::ValueArg<int> cropBottom("","crop_bottom","Crop x pixels from the bottom of the image/video",false, 0 ,"int_pix");
+  TCLAP::ValueArg<int> cropTop("","crop_top","Crop x pixels from the top of the image/video",false, 0 ,"int_pix");
+  TCLAP::ValueArg<int> cropLeft("","crop_left","Crop x pixels from the left of the image/video",false, 0 ,"int_pix");
+  TCLAP::ValueArg<int> cropRight("","crop_right","Crop x pixels from the right of the image/video",false, 0 ,"int_pix");
 
   TCLAP::SwitchArg jsonSwitch("j","json","Output recognition results in JSON format.  Default=off", cmd, false);
   TCLAP::SwitchArg detectRegionSwitch("d","detect_region","Attempt to detect the region of the plate image.  Default=off", cmd, false);
@@ -82,7 +91,11 @@ int main( int argc, const char** argv )
     cmd.add( fileArg );
     cmd.add( countryCodeArg );
 
-    
+    cmd.add( cropBottom );
+    cmd.add( cropLeft );
+    cmd.add( cropRight );
+    cmd.add( cropTop );
+
     if (cmd.parse( argc, argv ) == false)
     {
       // Error occured while parsing.  Exit now.
@@ -99,6 +112,12 @@ int main( int argc, const char** argv )
     templateRegion = templateRegionArg.getValue();
     topn = topNArg.getValue();
     measureProcessingTime = clockSwitch.getValue();
+
+    cBottom = cropBottom.getValue();
+    cTop = cropTop.getValue();
+    cLeft = cropLeft.getValue();
+    cRight = cropRight.getValue();
+
   }
   catch (TCLAP::ArgException &e)    // catch any exceptions
   {
@@ -106,7 +125,7 @@ int main( int argc, const char** argv )
     return 1;
   }
 
-  
+
   cv::Mat frame;
 
   Alpr alpr(country, configFile);
@@ -132,6 +151,11 @@ int main( int argc, const char** argv )
       if (fileExists(filename.c_str()))
       {
 	frame = cv::imread( filename );
+    if (! cropframe(&frame,cLeft,cRight,cTop,cBottom))
+    {
+        std::cerr << "Failed to crop image" << std::endl;
+        return 1;
+    }
 	detectandshow( &alpr, frame, "", outputJson);
       }
       else
@@ -161,30 +185,35 @@ int main( int argc, const char** argv )
   else if (startsWith(filename, "http://") || startsWith(filename, "https://"))
   {
     int framenum = 0;
-    
+
     VideoBuffer videoBuffer;
-    
+
     videoBuffer.connect(filename, 5);
-    
+
     cv::Mat latestFrame;
-    
+
     while (program_active)
     {
       int response = videoBuffer.getLatestFrame(&latestFrame);
-      
+
       if (response != -1)
       {
+        if (! cropframe(&latestFrame,cLeft,cRight,cTop,cBottom))
+        {
+            std::cerr << "Failed to crop image" << std::endl;
+            return 1;
+        }
         detectandshow( &alpr, latestFrame, "", outputJson);
       }
-      
+
       cv::waitKey(10);
     }
-    
+
     videoBuffer.disconnect();
-    
+
     std::cout << "Video processing ended" << std::endl;
   }
-  else if (hasEndingInsensitive(filename, ".avi") || hasEndingInsensitive(filename, ".mp4") || hasEndingInsensitive(filename, ".webm") || 
+  else if (hasEndingInsensitive(filename, ".avi") || hasEndingInsensitive(filename, ".mp4") || hasEndingInsensitive(filename, ".webm") ||
 	   hasEndingInsensitive(filename, ".flv") || hasEndingInsensitive(filename, ".mjpg") || hasEndingInsensitive(filename, ".mjpeg"))
   {
     if (fileExists(filename.c_str()))
@@ -203,6 +232,13 @@ int main( int argc, const char** argv )
         }
         std::cout << "Frame: " << framenum << std::endl;
 
+        //crop an area
+        if (! cropframe(&frame,cLeft,cRight,cTop,cBottom))
+        {
+            std::cerr << "Failed to crop image" << std::endl;
+            return 1;
+        }
+
         detectandshow( &alpr, frame, "", outputJson);
         //create a 1ms delay
         cv::waitKey(1);
@@ -214,14 +250,19 @@ int main( int argc, const char** argv )
       std::cerr << "Video file not found: " << filename << std::endl;
     }
   }
-  else if (hasEndingInsensitive(filename, ".png") || hasEndingInsensitive(filename, ".jpg") || 
+  else if (hasEndingInsensitive(filename, ".png") || hasEndingInsensitive(filename, ".jpg") ||
 	   hasEndingInsensitive(filename, ".jpeg") || hasEndingInsensitive(filename, ".gif"))
   {
     if (fileExists(filename.c_str()))
     {
-      frame = cv::imread( filename );
+        frame = cv::imread( filename );
 
-      detectandshow( &alpr, frame, "", outputJson);
+        if (! cropframe(&frame,cLeft,cRight,cTop,cBottom))
+        {
+            std::cerr << "Failed to crop image" << std::endl;
+            return 1;
+        }
+        detectandshow( &alpr, frame, "", outputJson);
     }
     else
     {
@@ -241,6 +282,11 @@ int main( int argc, const char** argv )
         std::string fullpath = filename + "/" + files[i];
         std::cout << fullpath << std::endl;
         frame = cv::imread( fullpath.c_str() );
+        if (! cropframe(&frame,cLeft,cRight,cTop,cBottom))
+        {
+            std::cerr << "Failed to crop image" << std::endl;
+            return 1;
+        }
         if (detectandshow( &alpr, frame, "", outputJson))
         {
           //while ((char) cv::waitKey(50) != 'c') { }
@@ -261,8 +307,19 @@ int main( int argc, const char** argv )
   return 0;
 }
 
+// crop feature, allows a user to crop unwanted areas prior to detection, for example to remove a date/time stamp
+// may have been better to specify the detection region instead as a rect
+bool cropframe(cv::Mat *frame,int dleft,int dright,int dtop,int dbottom)
+{
+        if ((dleft + dright) >= frame->size().width || (dtop + dbottom) >= frame->size().height) {
+            std::cerr << "No image left after crop " << std::endl;
+            return false;
+        }
+        cv::Rect myROI(dleft, dtop, frame->size().width - dright, frame->size().height - dbottom);
+        *frame = (*frame)(myROI);
+        return true;
 
-
+}
 
 bool detectandshow( Alpr* alpr, cv::Mat frame, std::string region, bool writeJson)
 {
@@ -279,8 +336,8 @@ bool detectandshow( Alpr* alpr, cv::Mat frame, std::string region, bool writeJso
   double totalProcessingTime = diffclock(startTime, endTime);
   if (measureProcessingTime)
     std::cout << "Total Time to process image: " << totalProcessingTime << "ms." << std::endl;
-  
-  
+
+
   if (writeJson)
   {
     std::cout << alpr->toJson(results, totalProcessingTime) << std::endl;
